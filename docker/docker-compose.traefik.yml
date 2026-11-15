@@ -1,0 +1,40 @@
+# Extra configuration for a server where Traefik already runs (external network `traefik-proxy`,
+# entrypoint `websecure`, certificate resolver `letsencrypt`). It only adds networks and labels
+# to docker-compose.yml, so the local stack stays untouched. Run it from the repository root with
+# `make app-up-traefik`. Traefik terminates HTTPS, so nginx stays on plain HTTP behind it.
+#
+# Needs in .env: GUMUNOVA_HOST and GUMUNOVA_STORAGE_HOST (DNS records pointing to the server).
+# The app has no login yet, so anyone who reaches GUMUNOVA_HOST can use it.
+
+services:
+  nginx:
+    networks:
+      - default
+      - traefik-proxy
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=traefik-proxy"
+      - "traefik.http.routers.gumunova.rule=Host(`${GUMUNOVA_HOST:?Set GUMUNOVA_HOST in .env}`)"
+      - "traefik.http.routers.gumunova.entrypoints=websecure"
+      - "traefik.http.routers.gumunova.tls.certresolver=letsencrypt"
+      - "traefik.http.services.gumunova.loadbalancer.server.port=8080"
+
+  # Browsers download the product images straight from the object storage through signed URLs,
+  # so it needs its own public address (OBJECT_STORAGE_PUBLIC_ENDPOINT=https://<GUMUNOVA_STORAGE_HOST>).
+  # Unsigned requests are rejected by the storage itself.
+  # With Cloudflare R2 this router is not needed.
+  object-storage:
+    networks:
+      - default
+      - traefik-proxy
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=traefik-proxy"
+      - "traefik.http.routers.gumunova-storage.rule=Host(`${GUMUNOVA_STORAGE_HOST:?Set GUMUNOVA_STORAGE_HOST in .env}`)"
+      - "traefik.http.routers.gumunova-storage.entrypoints=websecure"
+      - "traefik.http.routers.gumunova-storage.tls.certresolver=letsencrypt"
+      - "traefik.http.services.gumunova-storage.loadbalancer.server.port=8333"
+
+networks:
+  traefik-proxy:
+    external: true

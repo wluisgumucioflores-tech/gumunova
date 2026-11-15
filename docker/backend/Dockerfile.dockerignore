@@ -1,0 +1,7 @@
+# Only backend/ and this folder are needed.
+*
+!backend
+!docker/backend
+**/.env
+**/.env.*
+**/.DS_Store

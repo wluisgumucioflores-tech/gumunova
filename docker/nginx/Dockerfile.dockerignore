@@ -1,0 +1,9 @@
+# Only web/ and this folder are needed.
+*
+!web
+!docker/nginx
+**/node_modules
+**/dist
+**/.env
+**/.env.*
+**/.DS_Store

@@ -1,0 +1,90 @@
+# Whole stack: nginx (web + /api proxy), api (Go), postgres and object-storage.
+# Run it from the repository root with `make app-up` (it reads the root .env). Without make:
+#   docker compose --env-file .env -f docker/docker-compose.yml up -d --build
+# `make up` starts only postgres and object-storage, to run the API and the web from the host.
+
+# Fixed so the data volumes keep the same names wherever this file lives.
+name: gumunova
+
+services:
+  postgres:
+    image: postgres:17
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:?Set POSTGRES_USER in .env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:?Set POSTGRES_DB in .env}
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # Local stand-in for Cloudflare R2: both expose an S3-compatible API.
+  object-storage:
+    image: chrislusf/seaweedfs:4.50
+    command: server -s3 -dir=/data
+    environment:
+      AWS_ACCESS_KEY_ID: ${OBJECT_STORAGE_ACCESS_KEY:?Set OBJECT_STORAGE_ACCESS_KEY in .env}
+      AWS_SECRET_ACCESS_KEY: ${OBJECT_STORAGE_SECRET_KEY:?Set OBJECT_STORAGE_SECRET_KEY in .env}
+    ports:
+      - "127.0.0.1:${OBJECT_STORAGE_PORT:-8333}:8333"
+    volumes:
+      - object_storage_data:/data
+
+  # The Go API. On start it applies the pending migrations, then serves requests.
+  api:
+    build:
+      context: ..
+      dockerfile: docker/backend/Dockerfile
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?sslmode=disable
+      # Not published: only nginx reaches the API, through the compose network.
+      HTTP_ADDR: 0.0.0.0:8080
+      OBJECT_STORAGE_ENDPOINT: http://object-storage:8333
+      # Signed image URLs are opened by the browser, which cannot resolve "object-storage".
+      OBJECT_STORAGE_PUBLIC_ENDPOINT: ${OBJECT_STORAGE_PUBLIC_ENDPOINT:-http://localhost:${OBJECT_STORAGE_PORT:-8333}}
+      OBJECT_STORAGE_REGION: ${OBJECT_STORAGE_REGION:-us-east-1}
+      OBJECT_STORAGE_BUCKET: ${OBJECT_STORAGE_BUCKET:?Set OBJECT_STORAGE_BUCKET in .env}
+      OBJECT_STORAGE_ACCESS_KEY: ${OBJECT_STORAGE_ACCESS_KEY:?Set OBJECT_STORAGE_ACCESS_KEY in .env}
+      OBJECT_STORAGE_SECRET_KEY: ${OBJECT_STORAGE_SECRET_KEY:?Set OBJECT_STORAGE_SECRET_KEY in .env}
+      OBJECT_STORAGE_AUTO_CREATE_BUCKET: ${OBJECT_STORAGE_AUTO_CREATE_BUCKET:-false}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      object-storage:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # Serves the web app and proxies /api to the API.
+  nginx:
+    build:
+      context: ..
+      dockerfile: docker/nginx/Dockerfile
+      args:
+        VITE_PUBLIC_BASE_URL: ${VITE_PUBLIC_BASE_URL:-}
+    ports:
+      # The API has no authentication yet, so it is only reachable from this machine by default.
+      # Set WEB_BIND=0.0.0.0 to open it to the local network (for example, to scan QR codes with a phone).
+      - "${WEB_BIND:-127.0.0.1}:${WEB_PORT:-8081}:8080"
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  object_storage_data:
